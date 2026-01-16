@@ -58,16 +58,20 @@ fn main() -> Result<()> {
     println!("Using Lichess study ID: {}", study_id);
     println!("Downloading from: {}", lichess_url);
     
+    // Create a random temporary filename for the PGN download
+    let temp_pgn_file = format!("/tmp/lichess_study_{}.pgn", std::process::id());
+    println!("Using temporary file: {}", temp_pgn_file);
+    
     // Download the latest study data from Lichess
     println!("Downloading Lichess study data...");
-    download_lichess_study(&lichess_url, "lichess_study.pgn")?;
+    download_lichess_study(&lichess_url, &temp_pgn_file)?;
     
     println!("Reading study positions...");
-    let study_data = read_lichess_study("lichess_study.pgn")?;
+    let study_data = read_lichess_study(&temp_pgn_file)?;
     println!("Found {} positions in study: {}", study_data.positions.len(), study_data.name);
     
     println!("Creating PDF...");
-    let pdf_filename = format!("{}.pdf", study_data.name.replace(' ', "_"));
+    let pdf_filename = format!("{}.pdf", study_data.name.replace(' ', "_").replace('.', ""));
     create_pdf(&study_data, &pdf_filename)?;
     
     println!("Generated PDF: {} with {} chess positions", pdf_filename, study_data.positions.len());
@@ -106,6 +110,7 @@ fn read_lichess_study(filename: &str) -> Result<StudyData> {
     let mut positions = Vec::new();
     let mut position_number = 1;
     let mut current_event = String::new();
+    let mut current_chapter = String::new();
     let mut current_fen = String::new();
     let mut study_name = String::new();
     
@@ -127,6 +132,17 @@ fn read_lichess_study(filename: &str) -> Result<StudyData> {
             }
         }
         
+        // Parse ChapterName line
+        if line.starts_with("[ChapterName \"") {
+            if let Some(start) = line.find('"') {
+                if let Some(end) = line.rfind('"') {
+                    if end > start {
+                        current_chapter = line[start + 1..end].to_string();
+                    }
+                }
+            }
+        }
+        
         // Parse Event line
         if line.starts_with("[Event \"") {
             if let Some(start) = line.find('"') {
@@ -140,9 +156,6 @@ fn read_lichess_study(filename: &str) -> Result<StudyData> {
                             // Remove "WM25: " prefix if present for the study name
                             study_name = study_name.strip_prefix("WM25: ").unwrap_or(&study_name).to_string();
                         }
-                        
-                        // Remove "WM25: " prefix if present for position descriptions
-                        current_event = current_event.strip_prefix("WM25: ").unwrap_or(&current_event).to_string();
                     }
                 }
             }
@@ -159,12 +172,12 @@ fn read_lichess_study(filename: &str) -> Result<StudyData> {
             }
         }
         
-        // When we have both Event and FEN, create position
-        if !current_event.is_empty() && !current_fen.is_empty() {
+        // When we have ChapterName and FEN, create position
+        if !current_chapter.is_empty() && !current_fen.is_empty() {
             let black_to_move = current_fen.contains(" b ");
             let pos = ChessPosition {
                 number: position_number,
-                description: current_event.clone(),
+                description: current_chapter.clone(),
                 fen: current_fen.clone(),
                 black_to_move,
             };
@@ -172,7 +185,7 @@ fn read_lichess_study(filename: &str) -> Result<StudyData> {
             position_number += 1;
             
             // Reset for next position
-            current_event.clear();
+            current_chapter.clear();
             current_fen.clear();
         }
     }
@@ -212,12 +225,14 @@ fn create_pdf(study_data: &StudyData, filename: &str) -> Result<()> {
         
         // Add study name centered before the first boards
         let study_name_y = PAGE_HEIGHT - 25.0; // 25mm from top
-        let study_name_x = (PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT) / 2.0 + MARGIN_LEFT - 10.0; // Centered
+        let title_width_estimate = study_data.name.len() as f32 * 1.8; // Rough estimate
+        let study_name_x = (PAGE_WIDTH - title_width_estimate) / 2.0; // Centered
         current_layer.use_text(&study_data.name, 18.0, Mm(study_name_x), Mm(study_name_y), &font);
         
         // Add page number centered at the bottom
         let page_info = format!("{}/{}", page + 1, page_count);
-        let page_info_x = (PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT) / 2.0 + MARGIN_LEFT - 5.0; // Centered
+        let page_info_width_estimate = page_info.len() as f32 * 1.2;
+        let page_info_x = (PAGE_WIDTH - page_info_width_estimate) / 2.0; // Centered
         let page_info_y = 10.0; // 10mm from bottom
         current_layer.use_text(page_info, 14.0, Mm(page_info_x), Mm(page_info_y), &font);
         
@@ -398,18 +413,14 @@ fn draw_piece_to_pixmap(pixmap: &mut tiny_skia::Pixmap, piece: char, x: usize, y
 fn draw_coordinates_and_description(layer: &PdfLayerReference, x: f32, y: f32, pos: &ChessPosition, font: &printpdf::IndirectFontRef) -> Result<()> {
     use printpdf::*;
     
-    // Split description text at colon into two lines if present
-    // Note: A colon (:) in the position description triggers a line feed - 
-    // text before the colon goes on the first line, text after goes on the second line
+    // Use chapter name with position number for board descriptions
     let mut first_line = format!("{}. {}", pos.number, pos.description);
     let mut second_line = String::new();
     
+    // Split at colon if present
     if let Some(colon_pos) = pos.description.find(':') {
         first_line = format!("{}. {}", pos.number, &pos.description[..colon_pos + 1]);
         second_line = pos.description[colon_pos + 1..].trim().to_string();
-        println!("Split text - First: '{}', Second: '{}'", first_line, second_line);
-    } else {
-        println!("No colon found in description: '{}'", pos.description);
     }
     
     // Position text below the board with proper gap

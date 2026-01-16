@@ -1,0 +1,1 @@
+FEN2PDF is a PDF generator that creates multi-page chess position diagrams from Lichess studies. Single Rust binary that downloads Lichess study PGN files and generates A4 PDFs with 9 positions per page in a 3x3 grid layout.
