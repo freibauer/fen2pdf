@@ -59,7 +59,10 @@ fn main() -> Result<()> {
     println!("Downloading from: {}", lichess_url);
     
     // Create a random temporary filename for the PGN download
-    let temp_pgn_file = format!("/tmp/lichess_study_{}.pgn", std::process::id());
+    let temp_dir = std::env::temp_dir();
+    let temp_pgn_file = temp_dir.join(format!("lichess_study_{}.pgn", std::process::id()))
+        .to_string_lossy()
+        .to_string();
     println!("Using temporary file: {}", temp_pgn_file);
     
     // Download the latest study data from Lichess
@@ -266,9 +269,14 @@ fn create_pdf(study_data: &StudyData, filename: &str) -> Result<()> {
 }
 
 fn draw_chess_board(layer: &PdfLayerReference, x: f32, y: f32, pos: &ChessPosition, font: &printpdf::IndirectFontRef) -> Result<()> {
-    // Generate board image in memory instead of reading from file
-    let board_image_bytes = generate_board_image_bytes(pos)?;
-    let dynamic_image = printpdf::image_crate::load_from_memory(&board_image_bytes)?;
+    // Generate board image in RGB format for better Apple PDF viewer compatibility
+    let (width, height, rgb_data) = generate_board_rgb_data(pos)?;
+    
+    // Create image from RGB data using DynamicImage for Apple PDF viewer compatibility
+    use printpdf::image_crate::{DynamicImage, ImageBuffer, Rgb};
+    let image_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(width, height, rgb_data)
+        .ok_or_else(|| anyhow!("Failed to create image buffer from RGB data"))?;
+    let dynamic_image = DynamicImage::ImageRgb8(image_buffer);
     let image = printpdf::Image::from_dynamic_image(&dynamic_image);
     
     let scale_factor = 1.0;
@@ -315,7 +323,7 @@ fn parse_fen(fen_board: &str) -> [[char; 8]; 8] {
     board
 }
 
-fn generate_board_image_bytes(pos: &ChessPosition) -> Result<Vec<u8>> {
+fn generate_board_rgb_data(pos: &ChessPosition) -> Result<(u32, u32, Vec<u8>)> {
     use tiny_skia::*;
     
     // Scale board image size to match the larger 75mm boards
@@ -327,7 +335,7 @@ fn generate_board_image_bytes(pos: &ChessPosition) -> Result<Vec<u8>> {
     // Parse FEN
     let fen_parts: Vec<&str> = pos.fen.split(' ').collect();
     if fen_parts.is_empty() {
-        return Ok(Vec::new());
+        return Ok((board_size_px, board_size_px, Vec::new()));
     }
     let board = parse_fen(fen_parts[0]);
     
@@ -351,7 +359,7 @@ fn generate_board_image_bytes(pos: &ChessPosition) -> Result<Vec<u8>> {
             let color = if is_light_square {
                 Color::WHITE
             } else {
-                Color::from_rgba8(221, 221, 221, 255) // Blue #567f96
+                Color::from_rgba8(221, 221, 221, 255) // Light gray
             };
             
             // Fill square
@@ -368,10 +376,20 @@ fn generate_board_image_bytes(pos: &ChessPosition) -> Result<Vec<u8>> {
         }
     }
     
-    // Return PNG bytes instead of saving to file
-    let png_data = pixmap.encode_png()?;
-    Ok(png_data)
+    // Convert pixmap to RGB data for Apple PDF viewer compatibility
+    let mut rgb_data = Vec::with_capacity((board_size_px * board_size_px * 3) as usize);
+    let pixels = pixmap.pixels();
+    
+    for pixel in pixels {
+        rgb_data.push(pixel.red());
+        rgb_data.push(pixel.green());
+        rgb_data.push(pixel.blue());
+        // Skip alpha channel for RGB format
+    }
+    
+    Ok((board_size_px, board_size_px, rgb_data))
 }
+
 
 fn draw_piece_to_pixmap(pixmap: &mut tiny_skia::Pixmap, piece: char, x: usize, y: usize, size: usize, is_light_square: bool) -> Result<()> {
     if let Some(png_data) = pieces::get_piece_png_data(piece) {
